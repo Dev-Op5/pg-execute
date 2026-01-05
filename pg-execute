@@ -1,0 +1,215 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROGRAM_VERSION="1.0.0-postgres"
+
+CONFIG_FILE="$(pwd)/db.conf"
+PGPASSWORD=""
+
+die() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
+
+self_update() {
+  current_directory=$pwd
+  cd /tmp
+  if [ -f /tmp/pg-execute ]; then
+    rm /tmp/pg-execute
+  fi
+  wget https://raw.githubusercontent.com/Dev-Op5/pg-execute/master/pg-execute
+  chmod +x /tmp/pg-execute
+  sudo cp /tmp/pg-execute /usr/local/bin
+  echo "UPDATE SUCCESSFULLY!"
+  cd $current_directory
+  exit 1
+}
+
+load_config() {
+  [[ -f "$CONFIG_FILE" ]] || die "db.conf not found. Run: pg-execute generate-config"
+
+  while IFS='=' read -r k v; do
+    [[ "$k" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "$k" ]] && continue
+    k="$(echo "$k" | xargs)"
+    v="$(echo "$v" | xargs)"
+    export "$k"="$v"
+  done < "$CONFIG_FILE"
+
+  export PGPASSWORD="$db_pass"
+}
+
+psql_cmd() {
+  psql \
+    --host="$db_host" \
+    --port="$db_port" \
+    --username="$db_user" \
+    --dbname="$db_name" \
+    "$@"
+}
+
+help() {
+  cat <<EOF
+PostgreSQL Execute v$PROGRAM_VERSION
+
+[BACKUP & RESTORE]
+  pg-execute backup
+  pg-execute backup 7z
+  pg-execute restore <timestamp|file.7z>
+
+[SQL DEVELOPMENT]
+  pg-execute init
+  pg-execute migrate
+  pg-execute routines
+  pg-execute file <file.sql>
+
+[CONSOLE]
+  pg-execute login
+  pg-execute "SQL QUERY"
+
+[MISC]
+  pg-execute generate-config
+  pg-execute show-config
+  pg-execute -v
+EOF
+}
+
+case "${1:-help}" in
+  help|-h|--help|?)
+    help
+    ;;
+
+  -v|--version)
+    echo "pg-execute version $PROGRAM_VERSION"
+    ;;
+
+  self-update)
+  	self_update
+    ;;
+  
+  generate-config)
+    [[ -f "$CONFIG_FILE" ]] && die "db.conf already exists"
+    cat > "$CONFIG_FILE" <<EOF
+db_host = localhost
+db_port = 5432
+db_user = postgres
+db_pass = changeme
+db_name = example
+EOF
+    echo "db.conf generated."
+    ;;
+
+  show-config)
+    cat "$CONFIG_FILE"
+    ;;
+
+  init)
+    load_config
+    read -p "THIS WILL DROP DATABASE '$db_name'. Continue (Y/N): " yn
+    [[ "$yn" =~ ^[Yy]$ ]] || exit 0
+
+    dropdb   --if-exists -h "$db_host" -p "$db_port" -U "$db_user" "$db_name"
+    createdb              -h "$db_host" -p "$db_port" -U "$db_user" "$db_name"
+
+    mkdir -p routines
+    touch routines/.gitkeep
+
+    echo "Database initialized."
+    ;;
+
+  migrate)
+    load_config
+    read -p "DROP ALL TABLES & OBJECTS. Continue (Y/N): " yn
+    [[ "$yn" =~ ^[Yy]$ ]] || exit 0
+
+    psql_cmd <<'SQL'
+DO $$ DECLARE r RECORD;
+BEGIN
+  FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname='public') LOOP
+    EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE';
+  END LOOP;
+END $$;
+SQL
+
+    psql_cmd -f "1-structure.sql"
+    psql_cmd -c "SET session_replication_role = replica;"
+    psql_cmd -f "2-data.sql"
+    psql_cmd -c "SET session_replication_role = origin;"
+    
+    for f in routines/*.sql; do
+      [[ -f "$f" ]] && psql_cmd -f "$f"
+    done
+
+    echo "Migration complete."
+    ;;
+
+  routines)
+    load_config
+    [[ -d routines ]] || mkdir routines
+    for f in routines/*.sql; do
+      [[ -f "$f" ]] && psql_cmd -f "$f"
+    done
+    echo "Routines executed."
+    ;;
+
+  file)
+    load_config
+    [[ -f "${2:-}" ]] || die "SQL file not found"
+    psql_cmd -f "$2"
+    ;;
+
+  login)
+    load_config
+    psql_cmd
+    ;;
+
+  backup)
+    load_config
+    ts="$(date +%Y%m%d.%H%M%S)"
+    dir="backup-$ts"
+    archive="$dir.7z"
+
+    mkdir "$dir"
+
+    pg_dump -h "$db_host" -p "$db_port" -U "$db_user" \
+      --schema-only "$db_name" > "$dir/1-structure.sql"
+
+    pg_dump -h "$db_host" -p "$db_port" -U "$db_user" \
+      --data-only "$db_name" > "$dir/2-data.sql"
+
+    if [[ "${2:-}" == "7z" ]]; then
+      7z a -mx9 "$archive" "$dir"
+      rm -rf "$dir"
+      echo "Backup created: $archive"
+    else
+      echo "Backup created: $dir"
+    fi
+    ;;
+
+  restore)
+    load_config
+    [[ -z "${2:-}" ]] && die "restore requires argument"
+
+    src="$2"
+    if [[ -f "$src" ]]; then
+      7z x "$src"
+      src="${src%.7z}"
+    fi
+
+    [[ -d "$src" ]] || die "backup source not found"
+
+    psql_cmd -f "$src/1-structure.sql"
+    psql_cmd -c "SET session_replication_role = replica;"
+    psql_cmd -f "$src/2-data.sql"
+    psql_cmd -c "SET session_replication_role = origin;"
+
+    echo "Restore complete."
+    ;;
+
+  *)
+    load_config
+    echo "Query result:"
+    psql_cmd -c "$1"
+    ;;
+esac
+
