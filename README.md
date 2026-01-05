@@ -34,13 +34,21 @@ To perform backup just type in the directory that **already have** the `db.conf`
 ```bash
 pg-execute backup
 ```
+or
+```bash
+pg-execute backup 7z
+```
 
-This command will generate sub-folder with the name based on the date when you perform backup (format: `YYYY-MM-DD`), e.g. `2021-10-02`
+This command will generate sub-folder with the name based on the date when you perform backup (format: `YYYYMMDD.hhmmss`), e.g. `20211002.235920`
 
 To perform restore, just type the `execute restore` and add extra-parameter with the name of the folder that you've previously backup.
 
 ```bash
-pg-execute restore 2021-10-02
+pg-execute restore 20211002.235920
+```
+or
+```bash
+pg-execute restore 20211002.235920.7z
 ```
 
 As simple as that.
