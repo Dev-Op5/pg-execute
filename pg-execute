@@ -171,37 +171,53 @@ SQL
 
     mkdir "$dir"
 
+    echo "Dumping schema (DROP + CREATE, NO DATA)..."
     pg_dump -h "$db_host" -p "$db_port" -U "$db_user" \
-      --schema-only "$db_name" > "$dir/1-structure.sql"
+      --schema-only --clean --if-exists --no-owner --no-privileges \
+      "$db_name" > "$dir/1-structure.sql"
 
+    echo "Dumping data..."
     pg_dump -h "$db_host" -p "$db_port" -U "$db_user" \
       --data-only "$db_name" > "$dir/2-data.sql"
 
     if [[ "${2:-}" == "7z" ]]; then
       7z a -mx9 "$archive" "$dir"
       rm -rf "$dir"
-      echo "Backup created: $archive"
+      echo "Backup success: $archive"
     else
-      echo "Backup created: $dir"
+      echo "Backup success: $dir"
     fi
     ;;
 
   restore)
     load_config
-    [[ -z "${2:-}" ]] && die "restore requires argument"
+    [[ -z "${2:-}" ]] && die "restore requires backup source"
 
     src="$2"
+    extracted=false
+
     if [[ -f "$src" ]]; then
-      7z x "$src"
+      7z x "$src" -o"$PWD"
       src="${src%.7z}"
+      extracted=true
     fi
 
     [[ -d "$src" ]] || die "backup source not found"
 
+    echo "Restoring schema (clean)..."
     psql_cmd -f "$src/1-structure.sql"
-    psql_cmd -c "SET session_replication_role = replica;"
-    psql_cmd -f "$src/2-data.sql"
-    psql_cmd -c "SET session_replication_role = origin;"
+
+    echo "Restoring data (triggers disabled)..."
+psql_cmd <<SQL
+SET session_replication_role = replica;
+\i $src/2-data.sql
+SET session_replication_role = origin;
+SQL
+
+    if [[ "$extracted" = true ]]; then
+      read -p "Remove extracted backup folder ($src)? (Y/N): " yn
+      [[ "$yn" =~ ^[Yy]$ ]] && rm -rf "$src"
+    fi
 
     echo "Restore complete."
     ;;
