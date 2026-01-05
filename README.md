@@ -1,4 +1,6 @@
-# BASH PostgreSQL `pg-execute` (forked from: [MySQL/MariaDB `execute`](https://github.com/Dev-Op5/execute))
+# BASH PostgreSQL `pg-execute`
+
+### (forked from: [MySQL/MariaDB `execute`](https://github.com/Dev-Op5/execute))
 
 An impressive ~~black magic~~ management tools to easily maintain your SQL code.
 
